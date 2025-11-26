@@ -369,10 +369,11 @@ if st.session_state.show_json_model:
     **Formato das trades:**
     - `direction`: "YES" ou "NO"
     - `shares`: quantidade de shares
-    - `day`: dia da trade (1 a duração do mercado)
-    - `time`: hora da trade no formato "HH:MM"
+    - `day`: dia da trade (opcional, aceito mas ignorado nos cálculos)
+    - `time`: hora da trade no formato "HH:MM" (opcional, aceito mas ignorado nos cálculos)
     
-    ⚠️ No modo **Static**, os campos `day` e `time` são ignorados.
+    ⚠️ Os campos `day` e `time` são aceitos no JSON mas **não são considerados nos cálculos**. 
+    Todos os trades são calculados usando o mesmo tempo inicial.
     """)
 
 if st.session_state.show_import_json:
@@ -398,15 +399,11 @@ if st.session_state.show_import_json:
                             if direction in ["YES", "NO"]:
                                 shares = float(trade["shares"])
                                 if shares > 0:
-                                    # Get day and time (with defaults)
+                                    # Get day and time (accepted but ignored in calculations)
                                     day = int(trade.get("day", 1))
                                     trade_time = trade.get("time", "12:00")
                                     
-                                    # Validate day is within market duration
-                                    if is_dynamic:
-                                        day = max(1, min(day, market_duration_days))
-                                    
-                                    # Validate time format
+                                    # Validate time format (but won't be used in calculations)
                                     try:
                                         h, m = map(int, trade_time.split(":"))
                                         trade_time = f"{h:02d}:{m:02d}"
@@ -421,8 +418,8 @@ if st.session_state.show_import_json:
                                     })
                     
                     if imported_trades:
-                        # Sort by day and time
-                        imported_trades.sort(key=lambda t: (t["day"], t["time"]))
+                        # Keep trades in the order they appear in JSON
+                        # (day and time are not used for sorting or calculations)
                         st.session_state.trades = imported_trades
                         st.session_state.show_import_json = False
                         st.success(f"Imported {len(imported_trades)} trades successfully!")
@@ -469,7 +466,10 @@ if st.session_state.trades:
     for idx, trade in enumerate(page_trades):
         global_idx = start_idx + idx
         
-        if is_dynamic:
+        # Show day/time column if available in any trade
+        has_day_time = "day" in trade and "time" in trade
+        
+        if has_day_time:
             col_num, col_time, col_dir, col_shares, col_remove = st.columns([1, 2, 1.5, 1.5, 1])
         else:
             col_num, col_dir, col_shares, col_remove = st.columns([1, 2, 2, 1])
@@ -477,7 +477,7 @@ if st.session_state.trades:
         with col_num:
             st.write(f"**#{global_idx + 1}**")
         
-        if is_dynamic:
+        if has_day_time:
             with col_time:
                 st.write(f"📅 Day {trade['day']} @ {trade['time']}")
         
@@ -571,9 +571,6 @@ if st.button("Add Trade", use_container_width=True, type="primary"):
         "time": new_time_str
     }
     st.session_state.trades.append(new_trade)
-    
-    # Sort trades by day and time
-    st.session_state.trades.sort(key=lambda t: (t["day"], t["time"]))
     st.rerun()
 
 trades = st.session_state.trades
@@ -669,14 +666,11 @@ price_history.append({
 for idx, trade in enumerate(trades, start=1):
     direction = trade["direction"]
     shares = trade["shares"]
-    trade_day = trade["day"]
-    trade_time = trade["time"]
+    trade_day = trade.get("day", 1)  # Accepted but ignored in calculations
+    trade_time = trade.get("time", "12:00")  # Accepted but ignored in calculations
     
-    # Calculate T-t for this trade
-    if is_dynamic:
-        T_minus_t = calc_time_to_expiry(market_duration_days, trade_day, trade_time)
-    else:
-        T_minus_t = 1.0  # Not used for static
+    # Use initial T-t for all trades (day and time are ignored in calculations)
+    T_minus_t = T_minus_t_initial
     
     price_before = calc_price_pmamm(x, y, L_param, T_minus_t, is_dynamic)
     
@@ -701,7 +695,11 @@ for idx, trade in enumerate(trades, start=1):
         user_q_no += shares
     
     # Record price history
-    time_label = f"D{trade_day} {trade_time}" if is_dynamic else str(idx)
+    # Show day/time if available, otherwise just trade number
+    if "day" in trade and "time" in trade:
+        time_label = f"D{trade_day} {trade_time}"
+    else:
+        time_label = str(idx)
     price_history.append({
         "Trade": idx,
         "Time": time_label,
@@ -722,9 +720,12 @@ for idx, trade in enumerate(trades, start=1):
         "Fee": round(fee, 4)
     }
     
-    if is_dynamic:
+    # Show day/time if available (but not used in calculations)
+    if "day" in trade and "time" in trade:
         row_data["Day"] = trade_day
         row_data["Time"] = trade_time
+    
+    if is_dynamic:
         row_data["T-t (days)"] = round(T_minus_t, 2)
         L_eff = L_param * np.sqrt(T_minus_t)
         row_data["L_eff"] = round(L_eff, 2)
@@ -735,12 +736,8 @@ for idx, trade in enumerate(trades, start=1):
 payout = user_q_yes if final_outcome == "YES" else user_q_no
 net_worth = total_fee + total_cost - payout
 
-# Final prices (use last T-t or initial if no trades)
-if trades and is_dynamic:
-    last_trade = trades[-1]
-    T_minus_t_final = calc_time_to_expiry(market_duration_days, last_trade["day"], last_trade["time"])
-else:
-    T_minus_t_final = T_minus_t_initial
+# Final prices (always use initial T-t, day and time are ignored)
+T_minus_t_final = T_minus_t_initial
 
 final_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_final, is_dynamic)
 final_price_no = 1.0 - final_price_yes
@@ -816,9 +813,22 @@ else:
     st.markdown("**Trade Details:**")
     df = pd.DataFrame(rows)
     
-    # Reorder columns for dynamic
-    if is_dynamic and len(rows) > 0:
-        cols_order = ["Day", "Time", "Direction", "Shares", "T-t (days)", "L_eff", "Price Before", "Price After", "Avg. Price", "Cost Paid", "Fee"]
+    # Reorder columns
+    if len(rows) > 0:
+        # Check if Day/Time columns exist
+        base_cols = ["Direction", "Shares", "Price Before", "Price After", "Avg. Price", "Cost Paid", "Fee"]
+        if "Day" in df.columns and "Time" in df.columns:
+            cols_order = ["Day", "Time"] + base_cols
+        else:
+            cols_order = base_cols
+        
+        # Add dynamic-specific columns if applicable
+        if is_dynamic:
+            if "T-t (days)" in df.columns:
+                cols_order.insert(cols_order.index("Direction"), "T-t (days)")
+            if "L_eff" in df.columns:
+                cols_order.insert(cols_order.index("Direction"), "L_eff")
+        
         cols_order = [c for c in cols_order if c in df.columns]
         df = df[cols_order]
     
