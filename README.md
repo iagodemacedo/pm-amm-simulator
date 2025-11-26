@@ -1,34 +1,55 @@
-# LMSR Simulator
+# pm-AMM Simulator
 
-Um simulador interativo para mercados de previsão usando o mecanismo **Logarithmic Market Scoring Rule (LMSR)**. Esta aplicação permite simular trades em mercados binários (YES/NO) e analisar os resultados financeiros.
+Um simulador interativo para mercados de previsão usando o **pm-AMM** (Prediction Market AMM), um AMM uniforme otimizado para mercados de previsão desenvolvido pela [Paradigm](https://www.paradigm.xyz/2024/11/pm-amm).
 
 ## 🚀 Funcionalidades
 
+### Tipos de AMM Suportados
+
+O simulador suporta duas variantes do pm-AMM:
+
+#### Static pm-AMM
+- Liquidez constante ao longo do tempo
+- Invariante: `(y - x) Φ((y-x)/L) + L φ((y-x)/L) - y = 0`
+- Ideal para mercados onde a volatilidade não aumenta significativamente perto da expiração
+- **Trades não possuem timestamp** (dia/hora são ignorados)
+
+#### Dynamic pm-AMM
+- Liquidez que diminui conforme o mercado se aproxima da expiração
+- Invariante: `(y - x) Φ((y-x)/(L√(T-t))) + L√(T-t) φ((y-x)/(L√(T-t))) - y = 0`
+- Mantém LVR (Loss-vs-Rebalancing) constante ao longo do tempo
+- Protege LPs de perdas aumentadas perto da expiração
+- **Cada trade possui dia e hora**, afetando a liquidez efetiva
+
 ### Parâmetros Configuráveis
-- **Base b Parameter**: Parâmetro de liquidez do mercado LMSR
-- **Base Fee Rate**: Taxa de fee fixa aplicada em cada trade
+- **L (Liquidity Parameter)**: Parâmetro de escala/liquidez do pm-AMM
+- **Base Fee Rate**: Taxa aplicada em cada trade
+- **Market Duration (days)** (Dynamic pm-AMM): Duração total do mercado em dias
 
 ### Gerenciamento de Trades
-- ✅ Adicionar trades individualmente (Direction: YES/NO e quantidade de Shares)
+
+Cada trade no modo **Dynamic** possui:
+- `direction`: YES ou NO
+- `shares`: quantidade de shares
+- `day`: dia da trade (1 a duração do mercado)
+- `time`: hora da trade no formato "HH:MM"
+
+No modo **Static**, os campos `day` e `time` são ignorados.
+
+### Funcionalidades de Trades
+- ✅ Adicionar trades individualmente com dia/hora
 - ✅ Importar trades em lote via JSON
 - ✅ Visualizar todas as trades em tabela interativa
-- ✅ Suporte para quantidade ilimitada de trades
+- ✅ Ordenação automática por dia/hora
+- ✅ Cálculo dinâmico de T-t para cada trade
 
 ### Simulação e Resultados
-- Cálculo automático de custos usando fórmula LMSR
-- Cálculo de fees dinâmicos
-- Preço médio por share em cada trade
-- Resumo financeiro completo:
-  - Total Cost Paid
-  - Total Fees Earned
-  - Final Payout (baseado no resultado do mercado)
-  - Net Worth (com cores condicionais: verde para lucro, vermelho para prejuízo)
-
-### Interface
-- Interface moderna e intuitiva
-- Tabelas com scroll para grandes volumes de dados
-- Feedback visual claro para seleções e resultados
-- Botões coloridos para seleção de resultado final (YES verde, NO vermelho)
+- Cálculo automático de custos usando fórmulas pm-AMM
+- **L_eff dinâmico**: liquidez efetiva calculada para cada trade
+- Gráfico de evolução de preços ao longo do tempo
+- Gráfico de evolução do L_eff (Dynamic pm-AMM)
+- Visualização da curva invariante do AMM
+- Resumo financeiro completo
 
 ## 📦 Instalação
 
@@ -37,6 +58,8 @@ Um simulador interativo para mercados de previsão usando o mecanismo **Logarith
 - Streamlit
 - NumPy
 - Pandas
+- Matplotlib
+- SciPy
 
 ### Instalação das Dependências
 
@@ -52,68 +75,136 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
+### Selecionar Tipo de AMM
+
+1. Na seção "AMM Type", escolha entre **Static** ou **Dynamic**
+2. Para Dynamic, configure a **duração do mercado em dias**
+
 ### Adicionar Trades Manualmente
 
-1. Configure os parâmetros (Base b e Base Fee Rate)
-2. Selecione a direção (YES ou NO) e a quantidade de Shares
-3. Clique em "Add Trade" para adicionar à lista
+**Modo Dynamic:**
+1. Selecione o **Dia** (1 até duração do mercado)
+2. Selecione a **Hora** (formato HH:MM)
+3. Escolha a direção (YES ou NO)
+4. Defina a quantidade de Shares
+5. Clique em "Add Trade"
+
+**Modo Static:**
+1. Escolha a direção (YES ou NO)
+2. Defina a quantidade de Shares
+3. Clique em "Add Trade"
 
 ### Importar Trades via JSON
 
-1. Clique em "Modelo JSON" para ver o formato esperado
-2. Clique em "Importar JSON"
+1. Clique em "JSON Template" para ver o formato esperado
+2. Clique em "Import JSON"
 3. Cole o JSON no campo de texto
-4. Clique em "Confirmar Importação"
+4. Clique em "Confirm Import"
 
 #### Formato JSON
 
 ```json
 {
   "trades": [
-    {"direction": "YES", "shares": 10},
-    {"direction": "NO", "shares": 5},
-    {"direction": "YES", "shares": 20}
+    {"direction": "YES", "shares": 10, "day": 1, "time": "09:30"},
+    {"direction": "NO", "shares": 5, "day": 3, "time": "14:15"},
+    {"direction": "YES", "shares": 20, "day": 7, "time": "17:49"},
+    {"direction": "NO", "shares": 15, "day": 12, "time": "10:00"}
   ]
 }
 ```
 
-### Executar Simulação
+**Campos:**
+- `direction`: "YES" ou "NO" (obrigatório)
+- `shares`: quantidade de shares (obrigatório)
+- `day`: dia da trade, 1 a N (opcional, default: 1)
+- `time`: hora no formato "HH:MM" (opcional, default: "12:00")
 
-1. Adicione as trades desejadas
-2. Selecione o resultado final do mercado (YES ou NO)
-3. Visualize os resultados na seção "Simulation Results"
+⚠️ No modo **Static**, os campos `day` e `time` são ignorados durante a simulação.
 
 ## 📊 Entendendo os Resultados
 
+### Cálculo do Tempo até Expiração (T-t)
+
+Para o Dynamic pm-AMM, o tempo até expiração é calculado como:
+
+```
+T-t = market_duration_days - elapsed_days
+elapsed_days = (day - 1) + (hour + minute/60) / 24
+```
+
+**Exemplo:** Mercado de 14 dias
+- Trade no Dia 1 às 00:00 → T-t = 14.0 dias
+- Trade no Dia 1 às 12:00 → T-t = 13.5 dias
+- Trade no Dia 7 às 18:00 → T-t = 7.25 dias
+- Trade no Dia 14 às 23:59 → T-t ≈ 0.001 dias
+
 ### Métricas Exibidas
 
-- **Cost Paid**: Custo de cada trade calculado pela fórmula LMSR
-- **Avg. Price**: Preço médio por share (Cost Paid / Shares)
-- **Fee Earned**: Taxa cobrada em cada trade
-- **Total Cost Paid**: Soma de todos os custos pagos
-- **Total Fees Earned**: Soma de todas as fees cobradas
-- **Final Payout**: Quantidade de shares do resultado vencedor
-- **Net Worth**: Lucro líquido (Fees + Costs - Payout)
-  - Verde: Lucro positivo
-  - Vermelho: Prejuízo
+**Tabela de Trades (Dynamic):**
+- **Day/Time**: Quando a trade ocorreu
+- **T-t (days)**: Tempo restante até expiração
+- **L_eff**: Liquidez efetiva = L × √(T-t)
+- **Price Before/After**: Preços antes e depois da trade
+- **Avg. Price**: Preço médio por share
+- **Cost Paid**: Custo da trade
+- **Fee**: Taxa cobrada
+
+### Visualizações
+
+- **Price Evolution**: Gráfico mostrando como os preços YES/NO evoluem ao longo do tempo
+- **L_eff Evolution** (Dynamic): Gráfico de barras mostrando como a liquidez efetiva diminui
+- **Invariant Curve**: Visualização da curva invariante do pm-AMM
 
 ## 🔧 Tecnologias Utilizadas
 
 - **Streamlit**: Framework para aplicações web interativas
-- **NumPy**: Cálculos numéricos e matemáticos
-- **Pandas**: Manipulação e exibição de dados em tabelas
+- **NumPy**: Cálculos numéricos
+- **Pandas**: Manipulação de dados
+- **Matplotlib**: Visualizações e gráficos
+- **SciPy**: Funções estatísticas (distribuição normal) e otimização numérica
 
-## 📝 Sobre o LMSR
+## 📝 Sobre o pm-AMM
 
-O **Logarithmic Market Scoring Rule (LMSR)** é um mecanismo de precificação usado em mercados de previsão. Ele garante liquidez constante e permite que traders comprem e vendam shares a qualquer momento, com preços determinados pela fórmula:
+O **pm-AMM** é um AMM (Automated Market Maker) uniforme desenvolvido especificamente para mercados de previsão.
 
+### Static vs Dynamic pm-AMM
+
+| Aspecto | Static | Dynamic |
+|---------|--------|---------|
+| Liquidez (L_eff) | Constante = L | Diminui = L × √(T-t) |
+| LVR | Aumenta perto da expiração | Constante ao longo do tempo |
+| Uso de tempo | Não utiliza | Cada trade tem dia/hora |
+| Ideal para | Mercados de longo prazo | Mercados com data de expiração definida |
+
+### Fórmulas Matemáticas
+
+**Preço YES:**
 ```
-C(q_yes, q_no) = b * ln(e^(q_yes/b) + e^(q_no/b))
+P = Φ((y - x) / L_eff)
+```
+
+**Valor do Portfolio:**
+```
+V(P) = L_eff × φ(Φ⁻¹(P))
+```
+
+**Liquidez Efetiva:**
+```
+L_eff = L           (static)
+L_eff = L × √(T-t)  (dynamic)
 ```
 
 Onde:
-- `b` é o parâmetro de liquidez
-- `q_yes` e `q_no` são as quantidades de shares de cada resultado
+- `x`, `y` são as reservas de tokens YES e NO
+- `L` é o parâmetro de liquidez base
+- `T-t` é o tempo restante até expiração
+- `φ` é a PDF da distribuição normal padrão
+- `Φ` é a CDF da distribuição normal padrão
+
+## 📚 Referências
+
+- [pm-AMM: A Uniform AMM for Prediction Markets](https://www.paradigm.xyz/2024/11/pm-amm) - Paradigm Research
 
 ## 📄 Licença
 
