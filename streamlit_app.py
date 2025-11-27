@@ -193,6 +193,142 @@ def format_trade_time(day, time_str):
     """Format trade timestamp for display."""
     return f"Day {day} @ {time_str}"
 
+def run_simulation(trades, L_param, base_fee, initial_prob_yes, market_duration_days, is_dynamic, final_outcome):
+    """
+    Run the simulation and return results.
+    """
+    # Calculate initial reserves based on initial probability
+    p_yes = initial_prob_yes / 100.0
+
+    # For initial state, use full market duration (T-t = T at t=0)
+    if is_dynamic:
+        T_minus_t_initial = float(market_duration_days)
+    else:
+        T_minus_t_initial = 1.0
+
+    # Get initial reserves from price
+    x, y = get_reserves_from_price(p_yes, L_param, T_minus_t_initial, is_dynamic)
+
+    # Track initial state
+    x_initial, y_initial = x, y
+
+    total_cost = 0
+    total_fee = 0
+    rows = []
+
+    # Track user's purchased shares
+    user_q_yes = 0
+    user_q_no = 0
+
+    # Track price evolution
+    price_history = []
+
+    # Initial price
+    initial_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_initial, is_dynamic)
+    price_history.append({
+        "Trade": 0,
+        "Time": "Start",
+        "YES Price": initial_price_yes,
+        "NO Price": 1.0 - initial_price_yes,
+        "T-t": T_minus_t_initial if is_dynamic else None
+    })
+
+    # Process trades
+    for idx, trade in enumerate(trades, start=1):
+        direction = trade["direction"]
+        shares = trade["shares"]
+        trade_day = trade["day"]
+        trade_time = trade["time"]
+        
+        # Calculate T-t for this trade
+        if is_dynamic:
+            T_minus_t = calc_time_to_expiry(market_duration_days, trade_day, trade_time)
+        else:
+            T_minus_t = 1.0  # Not used for static
+        
+        price_before = calc_price_pmamm(x, y, L_param, T_minus_t, is_dynamic)
+        
+        # Calculate trade cost
+        cost, x_new, y_new, price_after = calc_trade_cost(
+            x, y, shares, direction, L_param, T_minus_t, is_dynamic
+        )
+        
+        # Apply fee
+        fee = cost * base_fee
+
+        total_cost += cost
+        total_fee += fee
+        
+        # Update state
+        x, y = x_new, y_new
+        
+        # Track user shares
+        if direction == "YES":
+            user_q_yes += shares
+        else:
+            user_q_no += shares
+        
+        # Record price history
+        time_label = f"D{trade_day} {trade_time}" if is_dynamic else str(idx)
+        price_history.append({
+            "Trade": idx,
+            "Time": time_label,
+            "YES Price": price_after,
+            "NO Price": 1.0 - price_after,
+            "T-t": T_minus_t if is_dynamic else None
+        })
+
+        avg_price = cost / shares if shares > 0 else 0
+        
+        row_data = {
+            "Direction": direction,
+            "Shares": shares,
+            "Price Before": round(price_before, 4),
+            "Price After": round(price_after, 4),
+            "Avg. Price": round(avg_price, 4),
+            "Cost Paid": round(cost, 4),
+            "Fee": round(fee, 4)
+        }
+        
+        if is_dynamic:
+            row_data["Day"] = trade_day
+            row_data["Time"] = trade_time
+            row_data["T-t (days)"] = round(T_minus_t, 2)
+            L_eff = L_param * np.sqrt(T_minus_t)
+            row_data["L_eff"] = round(L_eff, 2)
+        
+        rows.append(row_data)
+
+    # Calculate payout
+    payout = user_q_yes if final_outcome == "YES" else user_q_no
+    net_worth = total_fee + total_cost - payout
+
+    # Final prices (use last T-t or initial if no trades)
+    if trades and is_dynamic:
+        last_trade = trades[-1]
+        T_minus_t_final = calc_time_to_expiry(market_duration_days, last_trade["day"], last_trade["time"])
+    else:
+        T_minus_t_final = T_minus_t_initial
+
+    final_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_final, is_dynamic)
+    final_price_no = 1.0 - final_price_yes
+
+    return {
+        "total_cost": total_cost,
+        "total_fee": total_fee,
+        "payout": payout,
+        "net_worth": net_worth,
+        "final_price_yes": final_price_yes,
+        "final_price_no": final_price_no,
+        "price_history": price_history,
+        "rows": rows,
+        "x_initial": x_initial,
+        "y_initial": y_initial,
+        "x_final": x,
+        "y_final": y,
+        "T_minus_t_initial": T_minus_t_initial
+    }
+
 # =============================================================================
 # Streamlit UI
 # =============================================================================
@@ -228,6 +364,8 @@ if 'amm_type' not in st.session_state:
     st.session_state.amm_type = "Static"
 if 'market_duration_days' not in st.session_state:
     st.session_state.market_duration_days = 14
+if 'simulation_results' not in st.session_state:
+    st.session_state.simulation_results = None
 
 # =============================================================================
 # AMM Type Selection
@@ -425,6 +563,7 @@ if st.session_state.show_import_json:
                         imported_trades.sort(key=lambda t: (t["day"], t["time"]))
                         st.session_state.trades = imported_trades
                         st.session_state.show_import_json = False
+                        st.session_state.simulation_results = None  # Clear previous results
                         st.success(f"Imported {len(imported_trades)} trades successfully!")
                         st.rerun()
                     else:
@@ -448,6 +587,7 @@ if st.session_state.trades:
         if st.button("Clear All Trades", use_container_width=True, type="secondary"):
             st.session_state.trades = []
             st.session_state.trades_page = 1
+            st.session_state.simulation_results = None  # Clear previous results
             st.rerun()
     
     st.markdown("**Trades:**")
@@ -490,6 +630,7 @@ if st.session_state.trades:
                 st.session_state.trades.pop(global_idx)
                 if st.session_state.trades_page > 1 and len(st.session_state.trades) <= (st.session_state.trades_page - 1) * trades_per_page:
                     st.session_state.trades_page -= 1
+                st.session_state.simulation_results = None  # Clear previous results
                 st.rerun()
     
     if total_pages > 1:
@@ -574,205 +715,94 @@ if st.button("Add Trade", use_container_width=True, type="primary"):
     
     # Sort trades by day and time
     st.session_state.trades.sort(key=lambda t: (t["day"], t["time"]))
+    st.session_state.simulation_results = None  # Clear previous results
     st.rerun()
 
 trades = st.session_state.trades
 
-# Final Outcome buttons
+# Final Outcome selection
 st.markdown("**Final Outcome of Market:**")
-
-yes_selected = st.session_state.final_outcome == "YES"
-no_selected = st.session_state.final_outcome == "NO"
-
-st.markdown(f"""
-<style>
-    div[data-testid="column"]:first-of-type button {{
-        background-color: {'#28a745' if yes_selected else '#f8f9fa'} !important;
-        color: {'white' if yes_selected else '#6c757d'} !important;
-        border: 2px solid {'#28a745' if yes_selected else '#dee2e6'} !important;
-        font-weight: {'bold' if yes_selected else 'normal'} !important;
-    }}
-    div[data-testid="column"]:first-of-type button:hover {{
-        background-color: {'#218838' if yes_selected else '#e9ecef'} !important;
-        border-color: {'#1e7e34' if yes_selected else '#adb5bd'} !important;
-    }}
-    div[data-testid="column"]:last-of-type button {{
-        background-color: {'#dc3545' if no_selected else '#f8f9fa'} !important;
-        color: {'white' if no_selected else '#6c757d'} !important;
-        border: 2px solid {'#dc3545' if no_selected else '#dee2e6'} !important;
-        font-weight: {'bold' if no_selected else 'normal'} !important;
-    }}
-    div[data-testid="column"]:last-of-type button:hover {{
-        background-color: {'#c82333' if no_selected else '#e9ecef'} !important;
-        border-color: {'#bd2130' if no_selected else '#adb5bd'} !important;
-    }}
-</style>
-""", unsafe_allow_html=True)
 
 col_yes, col_no = st.columns(2)
 
 with col_yes:
-    button_type = "primary" if yes_selected else "secondary"
-    if st.button("YES", key="btn_yes", use_container_width=True, type=button_type):
+    yes_selected = st.session_state.final_outcome == "YES"
+    if st.button("YES", key="btn_yes", use_container_width=True, type="primary" if yes_selected else "secondary"):
         st.session_state.final_outcome = "YES"
-        st.rerun()
 
 with col_no:
-    button_type = "primary" if no_selected else "secondary"
-    if st.button("NO", key="btn_no", use_container_width=True, type=button_type):
+    no_selected = st.session_state.final_outcome == "NO"
+    if st.button("NO", key="btn_no", use_container_width=True, type="primary" if no_selected else "secondary"):
         st.session_state.final_outcome = "NO"
-        st.rerun()
 
 final_outcome = st.session_state.final_outcome
+st.caption(f"Resultado selecionado: **{final_outcome}**")
+
+st.divider()
 
 # =============================================================================
-# Simulation logic
+# Simulate Button
 # =============================================================================
+st.subheader("🚀 Run Simulation")
 
-# Calculate initial reserves based on initial probability
-p_yes = initial_prob_yes / 100.0
+col_sim, col_info = st.columns([1, 2])
 
-# For initial state, use full market duration (T-t = T at t=0)
-if is_dynamic:
-    T_minus_t_initial = float(market_duration_days)
-else:
-    T_minus_t_initial = 1.0
-
-# Get initial reserves from price
-x, y = get_reserves_from_price(p_yes, L_param, T_minus_t_initial, is_dynamic)
-
-# Track initial state
-x_initial, y_initial = x, y
-
-total_cost = 0
-total_fee = 0
-rows = []
-
-# Track user's purchased shares
-user_q_yes = 0
-user_q_no = 0
-
-# Track price evolution
-price_history = []
-
-# Initial price
-initial_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_initial, is_dynamic)
-price_history.append({
-    "Trade": 0,
-    "Time": "Start",
-    "YES Price": initial_price_yes,
-    "NO Price": 1.0 - initial_price_yes,
-    "T-t": T_minus_t_initial if is_dynamic else None
-})
-
-# Process trades
-for idx, trade in enumerate(trades, start=1):
-    direction = trade["direction"]
-    shares = trade["shares"]
-    trade_day = trade["day"]
-    trade_time = trade["time"]
-    
-    # Calculate T-t for this trade
-    if is_dynamic:
-        T_minus_t = calc_time_to_expiry(market_duration_days, trade_day, trade_time)
-    else:
-        T_minus_t = 1.0  # Not used for static
-    
-    price_before = calc_price_pmamm(x, y, L_param, T_minus_t, is_dynamic)
-    
-    # Calculate trade cost
-    cost, x_new, y_new, price_after = calc_trade_cost(
-        x, y, shares, direction, L_param, T_minus_t, is_dynamic
+with col_sim:
+    simulate_clicked = st.button(
+        "▶️ Simular", 
+        use_container_width=True, 
+        type="primary",
+        disabled=len(trades) == 0
     )
-    
-    # Apply fee
-    fee = cost * base_fee
 
-    total_cost += cost
-    total_fee += fee
-    
-    # Update state
-    x, y = x_new, y_new
-    
-    # Track user shares
-    if direction == "YES":
-        user_q_yes += shares
+with col_info:
+    if len(trades) == 0:
+        st.warning("Adicione trades para simular.")
     else:
-        user_q_no += shares
-    
-    # Record price history
-    time_label = f"D{trade_day} {trade_time}" if is_dynamic else str(idx)
-    price_history.append({
-        "Trade": idx,
-        "Time": time_label,
-        "YES Price": price_after,
-        "NO Price": 1.0 - price_after,
-        "T-t": T_minus_t if is_dynamic else None
-    })
+        st.info(f"📊 {len(trades)} trade(s) configurada(s). Clique em **Simular** para executar.")
 
-    avg_price = cost / shares if shares > 0 else 0
-    
-    row_data = {
-        "Direction": direction,
-        "Shares": shares,
-        "Price Before": round(price_before, 4),
-        "Price After": round(price_after, 4),
-        "Avg. Price": round(avg_price, 4),
-        "Cost Paid": round(cost, 4),
-        "Fee": round(fee, 4)
-    }
-    
-    if is_dynamic:
-        row_data["Day"] = trade_day
-        row_data["Time"] = trade_time
-        row_data["T-t (days)"] = round(T_minus_t, 2)
-        L_eff = L_param * np.sqrt(T_minus_t)
-        row_data["L_eff"] = round(L_eff, 2)
-    
-    rows.append(row_data)
-
-# Calculate payout
-payout = user_q_yes if final_outcome == "YES" else user_q_no
-net_worth = total_fee + total_cost - payout
-
-# Final prices (use last T-t or initial if no trades)
-if trades and is_dynamic:
-    last_trade = trades[-1]
-    T_minus_t_final = calc_time_to_expiry(market_duration_days, last_trade["day"], last_trade["time"])
-else:
-    T_minus_t_final = T_minus_t_initial
-
-final_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_final, is_dynamic)
-final_price_no = 1.0 - final_price_yes
+# Run simulation when button is clicked
+if simulate_clicked and len(trades) > 0:
+    with st.spinner("Executando simulação..."):
+        st.session_state.simulation_results = run_simulation(
+            trades=trades,
+            L_param=L_param,
+            base_fee=base_fee,
+            initial_prob_yes=initial_prob_yes,
+            market_duration_days=market_duration_days,
+            is_dynamic=is_dynamic,
+            final_outcome=final_outcome
+        )
 
 # =============================================================================
-# Results
+# Results (only show if simulation was run)
 # =============================================================================
-st.subheader("Simulation Results")
-
-if not trades:
-    st.warning("No trades to simulate. Please add trades above.")
-else:
+if st.session_state.simulation_results is not None:
+    results = st.session_state.simulation_results
+    
+    st.divider()
+    st.subheader("📈 Simulation Results")
+    
     # Summary metrics
     col_m1, col_m2, col_m3 = st.columns(3)
     
     with col_m1:
-        st.metric("Total Cost Paid", f"{total_cost:.2f}")
-        st.metric("Total Fees", f"{total_fee:.2f}")
+        st.metric("Total Cost Paid", f"{results['total_cost']:.2f}")
+        st.metric("Total Fees", f"{results['total_fee']:.2f}")
     
     with col_m2:
-        st.metric("Final Payout", f"{payout:.2f}")
-        net_worth_delta = -net_worth if net_worth > 0 else abs(net_worth)
-        st.metric("Net Worth", f"{net_worth:.2f}", delta=f"{net_worth_delta:.2f}", delta_color="inverse")
+        st.metric("Final Payout", f"{results['payout']:.2f}")
+        net_worth_delta = -results['net_worth'] if results['net_worth'] > 0 else abs(results['net_worth'])
+        st.metric("Net Worth", f"{results['net_worth']:.2f}", delta=f"{net_worth_delta:.2f}", delta_color="inverse")
     
     with col_m3:
-        st.metric("Final YES Price", f"{final_price_yes:.4f}")
-        st.metric("Final NO Price", f"{final_price_no:.4f}")
+        st.metric("Final YES Price", f"{results['final_price_yes']:.4f}")
+        st.metric("Final NO Price", f"{results['final_price_no']:.4f}")
 
     # Price evolution chart
-    if price_history:
+    if results['price_history']:
         st.markdown("**Price Evolution:**")
-        price_df = pd.DataFrame(price_history)
+        price_df = pd.DataFrame(results['price_history'])
         
         fig, ax = plt.subplots(figsize=(10, 5))
         
@@ -794,12 +824,12 @@ else:
         st.pyplot(fig)
         
         # Show L_eff evolution for dynamic
-        if is_dynamic and len(price_history) > 1:
+        if is_dynamic and len(results['price_history']) > 1:
             st.markdown("**Effective Liquidity (L_eff) Evolution:**")
             
             fig3, ax3 = plt.subplots(figsize=(10, 4))
             
-            t_minus_t_values = [p["T-t"] for p in price_history if p["T-t"] is not None]
+            t_minus_t_values = [p["T-t"] for p in results['price_history'] if p["T-t"] is not None]
             l_eff_values = [L_param * np.sqrt(t) for t in t_minus_t_values]
             
             ax3.bar(range(len(l_eff_values)), l_eff_values, color="#3498db", alpha=0.7)
@@ -814,49 +844,54 @@ else:
 
     # Trades table
     st.markdown("**Trade Details:**")
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(results['rows'])
     
     # Reorder columns for dynamic
-    if is_dynamic and len(rows) > 0:
+    if is_dynamic and len(results['rows']) > 0:
         cols_order = ["Day", "Time", "Direction", "Shares", "T-t (days)", "L_eff", "Price Before", "Price After", "Avg. Price", "Cost Paid", "Fee"]
         cols_order = [c for c in cols_order if c in df.columns]
         df = df[cols_order]
     
     st.dataframe(df, height=400, use_container_width=True)
 
-# =============================================================================
-# Invariant Curve Visualization
-# =============================================================================
-st.subheader("pm-AMM Invariant Curve")
+    # =============================================================================
+    # Invariant Curve Visualization
+    # =============================================================================
+    st.subheader("pm-AMM Invariant Curve")
 
-# Generate curve points using initial T-t
-L_eff = get_effective_L(L_param, T_minus_t_initial, is_dynamic)
-prices = np.linspace(0.01, 0.99, 100)
-x_curve = []
-y_curve = []
+    # Generate curve points using initial T-t
+    T_minus_t_initial = results['T_minus_t_initial']
+    L_eff = get_effective_L(L_param, T_minus_t_initial, is_dynamic)
+    prices = np.linspace(0.01, 0.99, 100)
+    x_curve = []
+    y_curve = []
 
-for p in prices:
-    xi, yi = get_reserves_from_price(p, L_param, T_minus_t_initial, is_dynamic)
-    x_curve.append(xi)
-    y_curve.append(yi)
+    for p in prices:
+        xi, yi = get_reserves_from_price(p, L_param, T_minus_t_initial, is_dynamic)
+        x_curve.append(xi)
+        y_curve.append(yi)
 
-fig2, ax2 = plt.subplots(figsize=(8, 8))
-ax2.plot(x_curve, y_curve, 'b-', linewidth=2, label=f'{amm_type} pm-AMM Curve')
+    fig2, ax2 = plt.subplots(figsize=(8, 8))
+    ax2.plot(x_curve, y_curve, 'b-', linewidth=2, label=f'{amm_type} pm-AMM Curve')
 
-# Mark initial and final positions
-ax2.plot(x_initial, y_initial, 'go', markersize=12, label='Initial Position', zorder=5)
-if trades:
-    ax2.plot(x, y, 'ro', markersize=12, label='Final Position', zorder=5)
+    # Mark initial and final positions
+    ax2.plot(results['x_initial'], results['y_initial'], 'go', markersize=12, label='Initial Position', zorder=5)
+    ax2.plot(results['x_final'], results['y_final'], 'ro', markersize=12, label='Final Position', zorder=5)
 
-ax2.set_xlabel('x (YES reserves)')
-ax2.set_ylabel('y (NO reserves)')
-title_suffix = f", T={market_duration_days} days)" if is_dynamic else ")"
-ax2.set_title(f'{amm_type} pm-AMM Invariant Curve (L={L_param:.1f}' + title_suffix)
-ax2.legend()
-ax2.grid(True, alpha=0.3)
-ax2.set_aspect('equal', adjustable='box')
-plt.tight_layout()
-st.pyplot(fig2)
+    ax2.set_xlabel('x (YES reserves)')
+    ax2.set_ylabel('y (NO reserves)')
+    title_suffix = f", T={market_duration_days} days)" if is_dynamic else ")"
+    ax2.set_title(f'{amm_type} pm-AMM Invariant Curve (L={L_param:.1f}' + title_suffix)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_aspect('equal', adjustable='box')
+    plt.tight_layout()
+    st.pyplot(fig2)
+
+else:
+    st.divider()
+    st.subheader("📈 Simulation Results")
+    st.info("Configure os parâmetros, adicione trades e clique em **Simular** para ver os resultados.")
 
 # Footer
 st.markdown("---")
