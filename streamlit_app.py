@@ -12,31 +12,26 @@ from datetime import datetime, time
 # Based on: https://www.paradigm.xyz/2024/11/pm-amm
 # =============================================================================
 
-@st.cache_data
 def phi(z):
     """Standard normal probability density function (PDF)."""
     return norm.pdf(z)
 
-@st.cache_data
 def Phi(z):
     """Standard normal cumulative distribution function (CDF)."""
     return norm.cdf(z)
 
-@st.cache_data
 def Phi_inv(p):
     """Inverse of standard normal CDF (quantile function)."""
     # Clamp p to avoid infinity
     p = np.clip(p, 1e-10, 1 - 1e-10)
     return norm.ppf(p)
 
-@st.cache_data
 def get_effective_L(L, T_minus_t, is_dynamic):
     """Get effective liquidity parameter based on AMM type."""
     if is_dynamic:
         return L * np.sqrt(max(T_minus_t, 1e-10))
     return L
 
-@st.cache_data
 def calc_price_pmamm(x, y, L, T_minus_t=1.0, is_dynamic=False):
     """
     Calculate the price of YES token in pm-AMM.
@@ -48,7 +43,6 @@ def calc_price_pmamm(x, y, L, T_minus_t=1.0, is_dynamic=False):
     z = (y - x) / L_eff
     return Phi(z)
 
-@st.cache_data
 def calc_portfolio_value(P, L, T_minus_t=1.0, is_dynamic=False):
     """
     Calculate the portfolio value V(P) = L_eff * φ(Φ⁻¹(P))
@@ -57,7 +51,6 @@ def calc_portfolio_value(P, L, T_minus_t=1.0, is_dynamic=False):
     z = Phi_inv(P)
     return L_eff * phi(z)
 
-@st.cache_data
 def invariant_pmamm(x, y, L, T_minus_t=1.0, is_dynamic=False):
     """
     pm-AMM invariant equation (should equal 0 on the curve):
@@ -108,26 +101,25 @@ def solve_for_x(y, L, T_minus_t=1.0, is_dynamic=False, x_guess=None):
     except:
         return x_guess if x_guess is not None else y
 
-@st.cache_data
 def get_reserves_from_price(P, L, T_minus_t=1.0, is_dynamic=False):
     """
     Given a price P, calculate the reserves (x, y) on the pm-AMM curve.
-
+    
     From P = Φ((y-x)/L_eff), we get: y - x = L_eff * Φ⁻¹(P)
     Then we need another equation - we use the invariant.
     """
     L_eff = get_effective_L(L, T_minus_t, is_dynamic)
-
+    
     # From price equation: y - x = L_eff * Φ⁻¹(P)
     z = Phi_inv(P)
     diff = L_eff * z
-
+    
     # From invariant: (y-x)*Φ(z) + L_eff*φ(z) - y = 0
     # Substituting diff = y - x:
     # diff * P + L_eff * φ(z) = y
     y = diff * P + L_eff * phi(z)
     x = y - diff
-
+    
     return x, y
 
 def calc_trade_cost(x, y, shares, direction, L, T_minus_t=1.0, is_dynamic=False):
@@ -150,7 +142,7 @@ def calc_trade_cost(x, y, shares, direction, L, T_minus_t=1.0, is_dynamic=False)
     
     if direction == "YES":
         # Cost of YES = integral of price from x to x+shares
-        n_points = 20  # Reduced from 100 for better performance
+        n_points = 100
         x_range = np.linspace(x, x_new, n_points)
         prices = []
         for xi in x_range:
@@ -159,7 +151,7 @@ def calc_trade_cost(x, y, shares, direction, L, T_minus_t=1.0, is_dynamic=False)
         cost = np.trapz(prices, x_range)
     else:
         # Cost of NO = integral of (1 - price) from y to y+shares
-        n_points = 20  # Reduced from 100 for better performance
+        n_points = 100
         y_range = np.linspace(y, y_new, n_points)
         prices = []
         for yi in y_range:
@@ -169,16 +161,15 @@ def calc_trade_cost(x, y, shares, direction, L, T_minus_t=1.0, is_dynamic=False)
     
     return cost, x_new, y_new, P_after
 
-@st.cache_data
 def calc_time_to_expiry(market_duration_days, trade_day, trade_time_str):
     """
     Calculate T-t (time to expiry) based on market duration and trade timestamp.
-
+    
     Args:
         market_duration_days: Total market duration in days
         trade_day: Day of the trade (1 to market_duration_days)
         trade_time_str: Time of trade in "HH:MM" format
-
+    
     Returns:
         T_minus_t in days (float)
     """
@@ -187,262 +178,20 @@ def calc_time_to_expiry(market_duration_days, trade_day, trade_time_str):
         hours, minutes = map(int, trade_time_str.split(":"))
     except:
         hours, minutes = 12, 0  # Default to noon
-
+    
     # Calculate elapsed time in days
     # Day 1 at 00:00 = 0 days elapsed
     # Day 1 at 12:00 = 0.5 days elapsed
     elapsed_days = (trade_day - 1) + (hours + minutes / 60) / 24
-
+    
     # T-t = total duration - elapsed time
     T_minus_t = market_duration_days - elapsed_days
-
+    
     return max(T_minus_t, 0.001)  # Ensure positive
 
 def format_trade_time(day, time_str):
     """Format trade timestamp for display."""
     return f"Day {day} @ {time_str}"
-
-@st.cache_data
-def plot_price_evolution(price_history_tuple, amm_type, is_dynamic):
-    """Cached price evolution plot."""
-    # Convert tuple back to list of dicts
-    price_history = [dict(zip(['Trade', 'Time', 'YES Price', 'NO Price', 'T-t'], p))
-                     for p in price_history_tuple]
-
-    price_df = pd.DataFrame(price_history)
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-
-    x_labels = price_df["Time"].tolist()
-    x_positions = range(len(x_labels))
-
-    ax.plot(x_positions, price_df["YES Price"], label="YES Price",
-            color="#28a745", linewidth=2, marker="o")
-    ax.plot(x_positions, price_df["NO Price"], label="NO Price",
-            color="#dc3545", linewidth=2, marker="s")
-
-    ax.set_xticks(x_positions)
-    ax.set_xticklabels(x_labels, rotation=45, ha='right')
-    ax.set_xlabel("Trade" if not is_dynamic else "Time")
-    ax.set_ylabel("Price")
-    ax.set_title(f"Share Price Evolution ({amm_type} pm-AMM)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim([0, 1])
-    plt.tight_layout()
-
-    return fig
-
-@st.cache_data
-def plot_leff_evolution(price_history_tuple, L_param, x_labels):
-    """Cached L_eff evolution plot for dynamic mode."""
-    # Extract T-t values from tuple
-    t_minus_t_values = [p[4] for p in price_history_tuple if p[4] is not None]
-    l_eff_values = [L_param * np.sqrt(t) for t in t_minus_t_values]
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-
-    ax.bar(range(len(l_eff_values)), l_eff_values, color="#3498db", alpha=0.7)
-    ax.set_xticks(range(len(x_labels)))
-    ax.set_xticklabels(x_labels, rotation=45, ha='right')
-    ax.set_xlabel("Time")
-    ax.set_ylabel("L_eff")
-    ax.set_title("Effective Liquidity Over Time")
-    ax.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout()
-
-    return fig
-
-@st.cache_data
-def plot_invariant_curve(L_param, T_minus_t_initial, is_dynamic, amm_type,
-                        market_duration_days, x_initial, y_initial,
-                        x_final, y_final, has_trades):
-    """Cached invariant curve plot."""
-    # Generate curve points
-    prices = np.linspace(0.01, 0.99, 50)
-    x_curve = []
-    y_curve = []
-
-    for p in prices:
-        xi, yi = get_reserves_from_price(p, L_param, T_minus_t_initial, is_dynamic)
-        x_curve.append(xi)
-        y_curve.append(yi)
-
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.plot(x_curve, y_curve, 'b-', linewidth=2, label=f'{amm_type} pm-AMM Curve')
-
-    # Mark initial and final positions
-    ax.plot(x_initial, y_initial, 'go', markersize=12, label='Initial Position', zorder=5)
-    if has_trades:
-        ax.plot(x_final, y_final, 'ro', markersize=12, label='Final Position', zorder=5)
-
-    ax.set_xlabel('x (YES reserves)')
-    ax.set_ylabel('y (NO reserves)')
-    title_suffix = f", T={market_duration_days} days)" if is_dynamic else ")"
-    ax.set_title(f'{amm_type} pm-AMM Invariant Curve (L={L_param:.1f}' + title_suffix)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_aspect('equal', adjustable='box')
-    plt.tight_layout()
-
-    return fig
-
-@st.cache_data
-def simulate_trades_cached(trades_tuple, L_param, base_fee, initial_prob_yes,
-                          market_duration_days, is_dynamic, final_outcome):
-    """
-    Cached simulation function. Takes hashable inputs and returns simulation results.
-
-    Args:
-        trades_tuple: Tuple of tuples (direction, shares, day, time) for hashability
-        L_param: Liquidity parameter
-        base_fee: Fee rate (decimal, not percentage)
-        initial_prob_yes: Initial YES probability (0-100)
-        market_duration_days: Market duration in days
-        is_dynamic: Boolean for Dynamic vs Static AMM
-        final_outcome: "YES" or "NO"
-
-    Returns:
-        Dictionary with simulation results
-    """
-    # Convert trades_tuple back to list of dicts
-    trades = [
-        {"direction": t[0], "shares": t[1], "day": t[2], "time": t[3]}
-        for t in trades_tuple
-    ]
-
-    # Calculate initial reserves based on initial probability
-    p_yes = initial_prob_yes / 100.0
-
-    # For initial state, use full market duration (T-t = T at t=0)
-    if is_dynamic:
-        T_minus_t_initial = float(market_duration_days)
-    else:
-        T_minus_t_initial = 1.0
-
-    # Get initial reserves from price
-    x, y = get_reserves_from_price(p_yes, L_param, T_minus_t_initial, is_dynamic)
-
-    # Track initial state
-    x_initial, y_initial = x, y
-
-    total_cost = 0
-    total_fee = 0
-    rows = []
-
-    # Track user's purchased shares
-    user_q_yes = 0
-    user_q_no = 0
-
-    # Track price evolution
-    price_history = []
-
-    # Initial price
-    initial_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_initial, is_dynamic)
-    price_history.append({
-        "Trade": 0,
-        "Time": "Start",
-        "YES Price": initial_price_yes,
-        "NO Price": 1.0 - initial_price_yes,
-        "T-t": T_minus_t_initial if is_dynamic else None
-    })
-
-    # Process trades
-    for idx, trade in enumerate(trades, start=1):
-        direction = trade["direction"]
-        shares = trade["shares"]
-        trade_day = trade["day"]
-        trade_time = trade["time"]
-
-        # Calculate T-t for this trade
-        if is_dynamic:
-            T_minus_t = calc_time_to_expiry(market_duration_days, trade_day, trade_time)
-        else:
-            T_minus_t = 1.0  # Not used for static
-
-        price_before = calc_price_pmamm(x, y, L_param, T_minus_t, is_dynamic)
-
-        # Calculate trade cost
-        cost, x_new, y_new, price_after = calc_trade_cost(
-            x, y, shares, direction, L_param, T_minus_t, is_dynamic
-        )
-
-        # Apply fee
-        fee = cost * base_fee
-
-        total_cost += cost
-        total_fee += fee
-
-        # Update state
-        x, y = x_new, y_new
-
-        # Track user shares
-        if direction == "YES":
-            user_q_yes += shares
-        else:
-            user_q_no += shares
-
-        # Record price history
-        time_label = f"D{trade_day} {trade_time}" if is_dynamic else str(idx)
-        price_history.append({
-            "Trade": idx,
-            "Time": time_label,
-            "YES Price": price_after,
-            "NO Price": 1.0 - price_after,
-            "T-t": T_minus_t if is_dynamic else None
-        })
-
-        avg_price = cost / shares if shares > 0 else 0
-
-        row_data = {
-            "Direction": direction,
-            "Shares": shares,
-            "Price Before": round(price_before, 4),
-            "Price After": round(price_after, 4),
-            "Avg. Price": round(avg_price, 4),
-            "Cost Paid": round(cost, 4),
-            "Fee": round(fee, 4)
-        }
-
-        if is_dynamic:
-            row_data["Day"] = trade_day
-            row_data["Time"] = trade_time
-            row_data["T-t (days)"] = round(T_minus_t, 2)
-            L_eff = L_param * np.sqrt(T_minus_t)
-            row_data["L_eff"] = round(L_eff, 2)
-
-        rows.append(row_data)
-
-    # Calculate payout
-    payout = user_q_yes if final_outcome == "YES" else user_q_no
-    net_worth = total_fee + total_cost - payout
-
-    # Final prices (use last T-t or initial if no trades)
-    if trades and is_dynamic:
-        last_trade = trades[-1]
-        T_minus_t_final = calc_time_to_expiry(market_duration_days, last_trade["day"], last_trade["time"])
-    else:
-        T_minus_t_final = T_minus_t_initial
-
-    final_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_final, is_dynamic)
-    final_price_no = 1.0 - final_price_yes
-
-    return {
-        'rows': rows,
-        'price_history': price_history,
-        'total_cost': total_cost,
-        'total_fee': total_fee,
-        'payout': payout,
-        'net_worth': net_worth,
-        'x': x,
-        'y': y,
-        'x_initial': x_initial,
-        'y_initial': y_initial,
-        'final_price_yes': final_price_yes,
-        'final_price_no': final_price_no,
-        'T_minus_t_initial': T_minus_t_initial,
-        'T_minus_t_final': T_minus_t_final
-    }
 
 # =============================================================================
 # Streamlit UI
@@ -877,36 +626,124 @@ with col_no:
 final_outcome = st.session_state.final_outcome
 
 # =============================================================================
-# Simulation logic - Using cached function for performance
+# Simulation logic
 # =============================================================================
 
-# Convert trades to hashable format (tuple of tuples) for caching
-trades_tuple = tuple(
-    (t['direction'], t['shares'], t['day'], t['time'])
-    for t in trades
-)
+# Calculate initial reserves based on initial probability
+p_yes = initial_prob_yes / 100.0
 
-# Call cached simulation function
-sim_results = simulate_trades_cached(
-    trades_tuple, L_param, base_fee, initial_prob_yes,
-    market_duration_days, is_dynamic, final_outcome
-)
+# For initial state, use full market duration (T-t = T at t=0)
+if is_dynamic:
+    T_minus_t_initial = float(market_duration_days)
+else:
+    T_minus_t_initial = 1.0
 
-# Unpack results
-rows = sim_results['rows']
-price_history = sim_results['price_history']
-total_cost = sim_results['total_cost']
-total_fee = sim_results['total_fee']
-payout = sim_results['payout']
-net_worth = sim_results['net_worth']
-x = sim_results['x']
-y = sim_results['y']
-x_initial = sim_results['x_initial']
-y_initial = sim_results['y_initial']
-final_price_yes = sim_results['final_price_yes']
-final_price_no = sim_results['final_price_no']
-T_minus_t_initial = sim_results['T_minus_t_initial']
-T_minus_t_final = sim_results['T_minus_t_final']
+# Get initial reserves from price
+x, y = get_reserves_from_price(p_yes, L_param, T_minus_t_initial, is_dynamic)
+
+# Track initial state
+x_initial, y_initial = x, y
+
+total_cost = 0
+total_fee = 0
+rows = []
+
+# Track user's purchased shares
+user_q_yes = 0
+user_q_no = 0
+
+# Track price evolution
+price_history = []
+
+# Initial price
+initial_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_initial, is_dynamic)
+price_history.append({
+    "Trade": 0,
+    "Time": "Start",
+    "YES Price": initial_price_yes,
+    "NO Price": 1.0 - initial_price_yes,
+    "T-t": T_minus_t_initial if is_dynamic else None
+})
+
+# Process trades
+for idx, trade in enumerate(trades, start=1):
+    direction = trade["direction"]
+    shares = trade["shares"]
+    trade_day = trade["day"]
+    trade_time = trade["time"]
+    
+    # Calculate T-t for this trade
+    if is_dynamic:
+        T_minus_t = calc_time_to_expiry(market_duration_days, trade_day, trade_time)
+    else:
+        T_minus_t = 1.0  # Not used for static
+    
+    price_before = calc_price_pmamm(x, y, L_param, T_minus_t, is_dynamic)
+    
+    # Calculate trade cost
+    cost, x_new, y_new, price_after = calc_trade_cost(
+        x, y, shares, direction, L_param, T_minus_t, is_dynamic
+    )
+    
+    # Apply fee
+    fee = cost * base_fee
+
+    total_cost += cost
+    total_fee += fee
+    
+    # Update state
+    x, y = x_new, y_new
+    
+    # Track user shares
+    if direction == "YES":
+        user_q_yes += shares
+    else:
+        user_q_no += shares
+    
+    # Record price history
+    time_label = f"D{trade_day} {trade_time}" if is_dynamic else str(idx)
+    price_history.append({
+        "Trade": idx,
+        "Time": time_label,
+        "YES Price": price_after,
+        "NO Price": 1.0 - price_after,
+        "T-t": T_minus_t if is_dynamic else None
+    })
+
+    avg_price = cost / shares if shares > 0 else 0
+    
+    row_data = {
+        "Direction": direction,
+        "Shares": shares,
+        "Price Before": round(price_before, 4),
+        "Price After": round(price_after, 4),
+        "Avg. Price": round(avg_price, 4),
+        "Cost Paid": round(cost, 4),
+        "Fee": round(fee, 4)
+    }
+    
+    if is_dynamic:
+        row_data["Day"] = trade_day
+        row_data["Time"] = trade_time
+        row_data["T-t (days)"] = round(T_minus_t, 2)
+        L_eff = L_param * np.sqrt(T_minus_t)
+        row_data["L_eff"] = round(L_eff, 2)
+    
+    rows.append(row_data)
+
+# Calculate payout
+payout = user_q_yes if final_outcome == "YES" else user_q_no
+net_worth = total_fee + total_cost - payout
+
+# Final prices (use last T-t or initial if no trades)
+if trades and is_dynamic:
+    last_trade = trades[-1]
+    T_minus_t_final = calc_time_to_expiry(market_duration_days, last_trade["day"], last_trade["time"])
+else:
+    T_minus_t_final = T_minus_t_initial
+
+final_price_yes = calc_price_pmamm(x, y, L_param, T_minus_t_final, is_dynamic)
+final_price_no = 1.0 - final_price_yes
 
 # =============================================================================
 # Results
@@ -932,25 +769,47 @@ else:
         st.metric("Final YES Price", f"{final_price_yes:.4f}")
         st.metric("Final NO Price", f"{final_price_no:.4f}")
 
-    # Price evolution chart - Using cached plot function
+    # Price evolution chart
     if price_history:
         st.markdown("**Price Evolution:**")
-
-        # Convert price_history to tuple for caching
-        price_history_tuple = tuple(
-            (p['Trade'], p['Time'], p['YES Price'], p['NO Price'], p['T-t'])
-            for p in price_history
-        )
-
-        fig = plot_price_evolution(price_history_tuple, amm_type, is_dynamic)
+        price_df = pd.DataFrame(price_history)
+        
+        fig, ax = plt.subplots(figsize=(10, 5))
+        
+        x_labels = price_df["Time"].tolist()
+        x_positions = range(len(x_labels))
+        
+        ax.plot(x_positions, price_df["YES Price"], label="YES Price", color="#28a745", linewidth=2, marker="o")
+        ax.plot(x_positions, price_df["NO Price"], label="NO Price", color="#dc3545", linewidth=2, marker="s")
+        
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(x_labels, rotation=45, ha='right')
+        ax.set_xlabel("Trade" if not is_dynamic else "Time")
+        ax.set_ylabel("Price")
+        ax.set_title(f"Share Price Evolution ({amm_type} pm-AMM)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([0, 1])
+        plt.tight_layout()
         st.pyplot(fig)
-
+        
         # Show L_eff evolution for dynamic
         if is_dynamic and len(price_history) > 1:
             st.markdown("**Effective Liquidity (L_eff) Evolution:**")
-
-            x_labels = [p['Time'] for p in price_history]
-            fig3 = plot_leff_evolution(price_history_tuple, L_param, tuple(x_labels))
+            
+            fig3, ax3 = plt.subplots(figsize=(10, 4))
+            
+            t_minus_t_values = [p["T-t"] for p in price_history if p["T-t"] is not None]
+            l_eff_values = [L_param * np.sqrt(t) for t in t_minus_t_values]
+            
+            ax3.bar(range(len(l_eff_values)), l_eff_values, color="#3498db", alpha=0.7)
+            ax3.set_xticks(range(len(x_labels)))
+            ax3.set_xticklabels(x_labels, rotation=45, ha='right')
+            ax3.set_xlabel("Time")
+            ax3.set_ylabel("L_eff")
+            ax3.set_title("Effective Liquidity Over Time")
+            ax3.grid(True, alpha=0.3, axis='y')
+            plt.tight_layout()
             st.pyplot(fig3)
 
     # Trades table
@@ -966,16 +825,37 @@ else:
     st.dataframe(df, height=400, use_container_width=True)
 
 # =============================================================================
-# Invariant Curve Visualization - Using cached plot function
+# Invariant Curve Visualization
 # =============================================================================
 st.subheader("pm-AMM Invariant Curve")
 
-# Use cached plot function
-fig2 = plot_invariant_curve(
-    L_param, T_minus_t_initial, is_dynamic, amm_type,
-    market_duration_days, x_initial, y_initial,
-    x, y, len(trades) > 0
-)
+# Generate curve points using initial T-t
+L_eff = get_effective_L(L_param, T_minus_t_initial, is_dynamic)
+prices = np.linspace(0.01, 0.99, 100)
+x_curve = []
+y_curve = []
+
+for p in prices:
+    xi, yi = get_reserves_from_price(p, L_param, T_minus_t_initial, is_dynamic)
+    x_curve.append(xi)
+    y_curve.append(yi)
+
+fig2, ax2 = plt.subplots(figsize=(8, 8))
+ax2.plot(x_curve, y_curve, 'b-', linewidth=2, label=f'{amm_type} pm-AMM Curve')
+
+# Mark initial and final positions
+ax2.plot(x_initial, y_initial, 'go', markersize=12, label='Initial Position', zorder=5)
+if trades:
+    ax2.plot(x, y, 'ro', markersize=12, label='Final Position', zorder=5)
+
+ax2.set_xlabel('x (YES reserves)')
+ax2.set_ylabel('y (NO reserves)')
+title_suffix = f", T={market_duration_days} days)" if is_dynamic else ")"
+ax2.set_title(f'{amm_type} pm-AMM Invariant Curve (L={L_param:.1f}' + title_suffix)
+ax2.legend()
+ax2.grid(True, alpha=0.3)
+ax2.set_aspect('equal', adjustable='box')
+plt.tight_layout()
 st.pyplot(fig2)
 
 # Footer
